@@ -10,13 +10,20 @@ import time
 import json
 import threading
 import queue
-import sounddevice as sd
+try:
+    import sounddevice as sd
+    VOICE_AVAILABLE = True
+except ImportError:
+    sd = None
+    VOICE_AVAILABLE = False
+    print("Voice input unavailable: install sounddevice (pip install sounddevice)")
 import json as js
 import os
 import subprocess
 import shutil
 import datetime
 import re
+import textwrap
 
 from vosk import Model, KaldiRecognizer
 from inference_sdk import InferenceConfiguration, InferenceHTTPClient
@@ -36,10 +43,13 @@ VOICE_MODE = False
 target_locked = False
 ai_suspended_until = 0.0
 VOICE_DEBUG = os.getenv("VOICE_DEBUG", "0") == "1"
+INFER_SCALE = float(os.getenv("INFER_SCALE", "0.7"))  # <1.0 to speed up; 1.0 for full-res
+DISPLAY_SCALE = float(os.getenv("DISPLAY_SCALE", "1.3"))  # >1.0 to enlarge window
 
 ROBOT_HOST = "moonshot1.local"  # set your robot IP/hostname
 ROBOT_PORT = int(os.getenv("ROBOT_PORT", "5005"))
 ROBOT_ON = True
+ROBOT_DEBUG = os.getenv("ROBOT_DEBUG", "0") == "1"
 
 
 CENTER_TOL_PX = 30
@@ -174,8 +184,8 @@ def send_move(dx, dy):
         print("Robot socket not ready; check ROBOT_HOST/ROBOT_ON.")
         return
     try:
-        # debug trace for verification
-        print(f"[robot] send move {dx:.2f} {dy:.2f} -> {ROBOT_ADDR}")
+        if ROBOT_DEBUG:
+            print(f"[robot] send move {dx:.2f} {dy:.2f} -> {ROBOT_ADDR}")
         sock.sendto(f"move {dx:.2f} {dy:.2f}".encode(), ROBOT_ADDR)
     except Exception as e:
         print(f"Robot move send failed: {e}")
@@ -218,6 +228,12 @@ class SurgicalState:
         self.events.append({"time": round(time.time(), 2), "event": msg})
 
 state = SurgicalState()
+chat_log = []  # (speaker, text)
+
+def log_chat(speaker, text, max_entries=8):
+    chat_log.append((speaker, text))
+    if len(chat_log) > max_entries:
+        del chat_log[0]
 
 def guidance_text(s):
     if s.phase == "SEARCH":
@@ -326,6 +342,7 @@ def ask_gemini(question: str):
         if not ask_offline_llm(question):
             speak("Jarvis is unavailable.")
         return
+    log_chat("You", question)
     model = _load_gemini()
     if model is None:
         if not ask_offline_llm(question):
@@ -355,7 +372,9 @@ Current datetime: {now}
             )
         )
         if resp and getattr(resp, "text", None):
-            speak(resp.text.strip())
+            reply = resp.text.strip()
+            log_chat("Jarvis", reply)
+            speak(reply)
         else:
             if not ask_offline_llm(question):
                 speak("I did not get a response.")
@@ -378,15 +397,17 @@ def ask_offline_llm(question: str):
     """
     if not OLLAMA_BIN or not OLLAMA_MODEL:
         return False
+    log_chat("You", question)
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z")
     prompt = f"""You are Jarvis, a concise surgical assistant.
 Current phase: {state.phase}
 Distance to tumor: {state.distance_mm}
 Centered: {state.centered}
-Confidence: {state.confidence}
+Confidence: {state.confidence:.2f}
 Recent events: {state.events[-5:]}
 Current datetime: {now}
 Answer briefly: {question}
+When mentioning confidence, round to 2 decimals. Give clear left/right/up/down and rotate cues for centering/alignment. Keep replies concise.
 """
     try:
         proc = subprocess.run(
@@ -394,10 +415,12 @@ Answer briefly: {question}
             input=prompt,
             text=True,
             capture_output=True,
-            timeout=20,
+            timeout=90,
         )
         if proc.returncode == 0 and proc.stdout.strip():
-            speak(proc.stdout.strip()[:400])
+            reply = proc.stdout.strip()[:400]
+            log_chat("Jarvis", reply)
+            speak(reply)
             return True
         print(f"Ollama returned {proc.returncode}: {proc.stderr}")
     except Exception as e:
@@ -408,6 +431,8 @@ Answer briefly: {question}
 # VOICE LISTENER
 # =========================
 def voice_listener():
+    if not VOICE_AVAILABLE:
+        return
     model = Model("vosk_models/vosk-model-small-en-us-0.15")
     rec = KaldiRecognizer(model, 16000)
 
@@ -450,14 +475,21 @@ while True:
     state.centered = False
     state.confidence = 0.0
 
-    preds = client.infer(frame, model_id=MODEL_ID).get("predictions", []) if AI_MODE else []
+    infer_frame = frame
+    scale_back = 1.0
+    if AI_MODE and INFER_SCALE != 1.0:
+        infer_frame = cv2.resize(frame, (int(W * INFER_SCALE), int(H * INFER_SCALE)))
+        scale_back = 1.0 / INFER_SCALE
 
-    if preds:
-        p = preds[0]
-        x = int(p["x"] - p["width"] / 2)
-        y = int(p["y"] - p["height"] / 2)
-        w = int(p["width"])
-        h = int(p["height"])
+    preds = client.infer(infer_frame, model_id=MODEL_ID).get("predictions", []) if AI_MODE else []
+    preds = [p for p in preds if p.get("class") == TRACK_CLASS and p.get("confidence", 0) >= CONFIDENCE_THRESH]
+    p = max(preds, key=lambda x: x.get("confidence", 0)) if preds else None
+
+    if p:
+        x = int(p["x"] * scale_back - p["width"] * scale_back / 2)
+        y = int(p["y"] * scale_back - p["height"] * scale_back / 2)
+        w = int(p["width"] * scale_back)
+        h = int(p["height"] * scale_back)
 
         state.confidence = p["confidence"]
         px = max(w, h)
@@ -483,7 +515,7 @@ while True:
     # AI auto-track
     auto_allowed = ROBOT_ON and AI_MODE and not VOICE_MODE and not target_locked and time.time() >= ai_suspended_until
     if auto_allowed:
-        if preds and state.confidence > 0.6:
+        if p and state.confidence > 0.6:
             dx = (bx - cx) / cx
             dy = (by - cy) / cy
             send_move(0, 0) if state.centered else send_move(dx, dy)
@@ -499,7 +531,14 @@ while True:
 
         if cmd:
             # CONTROL PATH
+            if cmd == "stop":
+                speak("Stopping")
+                suspend_ai("voice stop")
+                continue
             if cmd == "enable voice":
+                if not VOICE_AVAILABLE:
+                    speak("Voice input not available")
+                    continue
                 VOICE_MODE = True
                 speak("Voice control enabled")
             elif cmd == "disable voice":
@@ -540,10 +579,11 @@ while True:
                 GEMINI_ARMED = False
 
     # ----- PANEL -----
-    panel = np.zeros((H, 320, 3), dtype=np.uint8)
+    PANEL_W = 420
+    panel = np.zeros((H, PANEL_W, 3), dtype=np.uint8)
     panel[:] = (12, 18, 30)
-    cv2.rectangle(panel, (0, 0), (320, 60), (20, 45, 80), -1)
-    cv2.putText(panel, "SURGICAL AI", (14, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 165, 0), 2)
+    cv2.rectangle(panel, (0, 0), (PANEL_W, 74), (20, 45, 80), -1)
+    cv2.putText(panel, "SURGICAL AI", (18, 48), cv2.FONT_HERSHEY_SIMPLEX, 1.05, (255, 165, 0), 2)
 
     def put_row(y_pos, label, value, color=(230, 230, 230)):
         cv2.putText(panel, label, (14, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 175, 190), 1)
@@ -560,28 +600,51 @@ while True:
         put_row(y, "DIST", f"{state.distance_mm:.1f} mm", (180, 220, 255)); y += 28
     put_row(y, "CONF", f"{state.confidence:.2f}", (180, 220, 255)); y += 32
 
-    cv2.rectangle(panel, (12, y - 6), (308, y + 60), (24, 60, 110), -1)
+    cv2.rectangle(panel, (12, y - 6), (PANEL_W - 12, y + 60), (24, 60, 110), -1)
     cv2.putText(panel, "GUIDANCE", (20, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 140), 2)
     cv2.putText(panel, guidance_text(state), (20, y + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (230, 230, 230), 1)
 
-    shortcut_y = y + 84
-    cv2.putText(panel, "Keys: q quit | v voice | a AI | g Jarvis", (14, shortcut_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (130, 160, 200), 1)
+    # Jarvis chat
+    chat_top = y + 86
+    cv2.rectangle(panel, (12, chat_top - 6), (PANEL_W - 12, chat_top + 150), (22, 35, 55), -1)
+    cv2.putText(panel, "JARVIS CHAT", (20, chat_top + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 210, 240), 2)
+    line_y = chat_top + 42
+    for speaker, text in chat_log[-5:]:
+        prefix = f"{speaker}: "
+        wrapped = textwrap.wrap(prefix + text, width=38)
+        for i, line in enumerate(wrapped[:3]):
+            cv2.putText(panel, line, (18, line_y), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (220, 220, 220), 1)
+            line_y += 18
+        line_y += 4
 
-    cv2.imshow("Surgery Assist", np.hstack([frame, panel]))
+    shortcut_y = chat_top + 176
+    cv2.putText(panel, "Keys: q quit | v voice | a AI | g Jarvis | s stop", (14, shortcut_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (130, 160, 200), 1)
+
+    stack = np.hstack([frame, panel])
+    if DISPLAY_SCALE != 1.0:
+        stack = cv2.resize(stack, (int(stack.shape[1] * DISPLAY_SCALE), int(stack.shape[0] * DISPLAY_SCALE)))
+    cv2.imshow("Surgery Assist", stack)
     key = cv2.waitKey(1) & 0xFF
     if key == ord("q"):
         break
     if key == ord("v"):
-        VOICE_MODE = not VOICE_MODE
-        if not VOICE_MODE:
-            suspend_ai("voice disabled (keyboard)")
-        speak(f"Voice control {'enabled' if VOICE_MODE else 'disabled'} by keyboard")
+        if not VOICE_AVAILABLE and not VOICE_MODE:
+            speak("Voice input not available")
+        else:
+            VOICE_MODE = not VOICE_MODE
+            if not VOICE_MODE:
+                suspend_ai("voice disabled (keyboard)")
+            speak(f"Voice control {'enabled' if VOICE_MODE else 'disabled'} by keyboard")
     if key == ord("a"):
         AI_MODE = not AI_MODE
         if not AI_MODE:
             robot_stop()
             suspend_ai("AI mode off (keyboard)")
         speak(f"AI mode {'enabled' if AI_MODE else 'disabled'} by keyboard")
+    if key == ord("s"):
+        robot_stop()
+        suspend_ai("manual stop (keyboard)")
+        speak("Stopping")
     if key == ord("g"):
         GEMINI_ARMED = True
         speak("Jarvis is listening for your next question")

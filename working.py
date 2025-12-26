@@ -541,20 +541,31 @@ while True:
 
     # ----- PANEL -----
     panel = np.zeros((H, 320, 3), dtype=np.uint8)
-    y = [30]
-    def put(txt):
-        cv2.putText(panel, txt, (10, y[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        y[0] += 26
+    panel[:] = (12, 18, 30)
+    cv2.rectangle(panel, (0, 0), (320, 60), (20, 45, 80), -1)
+    cv2.putText(panel, "SURGICAL AI", (14, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 165, 0), 2)
 
-    put("SURGICAL AI PANEL")
-    put(f"AI MODE: {'ON' if AI_MODE else 'OFF'}")
-    put(f"VOICE MODE: {'ON' if VOICE_MODE else 'OFF'}")
-    put(f"Phase: {state.phase}")
+    def put_row(y_pos, label, value, color=(230, 230, 230)):
+        cv2.putText(panel, label, (14, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 175, 190), 1)
+        cv2.putText(panel, value, (140, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+
+    status_color = (50, 200, 120) if AI_MODE else (60, 150, 255)
+    voice_color = (50, 200, 120) if VOICE_MODE else (100, 100, 240)
+
+    y = 90
+    put_row(y, "AI MODE", "ON" if AI_MODE else "OFF", status_color); y += 28
+    put_row(y, "VOICE", "ON" if VOICE_MODE else "OFF", voice_color); y += 28
+    put_row(y, "PHASE", state.phase, (255, 215, 160)); y += 28
     if state.distance_mm is not None:
-        put(f"Distance: {state.distance_mm:.1f} mm")
-    put(f"Confidence: {state.confidence:.2f}")
-    put("Guidance:")
-    put(guidance_text(state))
+        put_row(y, "DIST", f"{state.distance_mm:.1f} mm", (180, 220, 255)); y += 28
+    put_row(y, "CONF", f"{state.confidence:.2f}", (180, 220, 255)); y += 32
+
+    cv2.rectangle(panel, (12, y - 6), (308, y + 60), (24, 60, 110), -1)
+    cv2.putText(panel, "GUIDANCE", (20, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 140), 2)
+    cv2.putText(panel, guidance_text(state), (20, y + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (230, 230, 230), 1)
+
+    shortcut_y = y + 84
+    cv2.putText(panel, "Keys: q quit | v voice | a AI | g Jarvis", (14, shortcut_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (130, 160, 200), 1)
 
     cv2.imshow("Surgery Assist", np.hstack([frame, panel]))
     key = cv2.waitKey(1) & 0xFF

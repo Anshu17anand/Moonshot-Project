@@ -34,8 +34,10 @@ CAMERA_PORT = 0
 AI_MODE = True
 VOICE_MODE = False
 target_locked = False
+ai_suspended_until = 0.0
+VOICE_DEBUG = os.getenv("VOICE_DEBUG", "0") == "1"
 
-ROBOT_HOST = "moonshot5.local"  # set your robot IP/hostname
+ROBOT_HOST = "moonshot1.local"  # set your robot IP/hostname
 ROBOT_PORT = int(os.getenv("ROBOT_PORT", "5005"))
 ROBOT_ON = True
 
@@ -49,24 +51,32 @@ REPORT_FILE = "surgery_report.json"
 REF_PX_DIAM = 500
 MM_PER_PX_SCALE = 0.02
 VOICE_MOVE_STEP = 0.4
+AI_SUSPEND_SECS = 4.0
 
 # =========================
 # VOICE COMMANDS (CONTROL)
 # =========================
-VOICE_COMMANDS = [
-    "move left", "move right", "move up", "move down",
-    "stop", "lock target", "release lock",
-    "enable voice", "disable voice"
-]
+VOICE_COMMANDS = {
+    "move left": ["move left", "left"],
+    "move right": ["move right", "right"],
+    "move up": ["move up", "up", "go up", "forward"],
+    "move down": ["move down", "down", "go down", "back", "backward"],
+    "stop": ["stop", "halt"],
+    "lock target": ["lock target", "lock on", "lock"],
+    "release lock": ["release lock", "unlock"],
+    "enable voice": ["enable voice", "voice on"],
+    "disable voice": ["disable voice", "voice off"],
+}
 
 voice_queue = queue.Queue()
 GEMINI_ARMED = False  # keyboard-armed for next Jarvis question
 
 def parse_control_command(text: str):
     txt = text.lower()
-    for cmd in VOICE_COMMANDS:
-        if cmd in txt:
-            return cmd
+    for cmd, phrases in VOICE_COMMANDS.items():
+        for p in phrases:
+            if p in txt:
+                return cmd
     return None
 
 QUESTION_HINTS = ["?", "what", "why", "how", "who", "where", "jarvis", "tell me", "explain", "should", "can you"]
@@ -173,6 +183,16 @@ def send_move(dx, dy):
 def robot_stop():
     send_move(0, 0)
 
+def suspend_ai(reason=""):
+    """
+    Pause auto-tracking briefly after a manual intervention so we do not fight the operator.
+    """
+    global ai_suspended_until
+    ai_suspended_until = time.time() + AI_SUSPEND_SECS
+    if reason:
+        print(f"[auto] AI paused for {AI_SUSPEND_SECS}s ({reason})")
+    robot_stop()
+
 # =========================
 # ROBOFLOW
 # =========================
@@ -215,6 +235,8 @@ def guidance_text(s):
 # =========================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_DISABLED = os.getenv("GEMINI_OFF", "0") == "1"
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL")  # offline Jarvis if set
+OLLAMA_BIN = shutil.which("ollama")
 _gemini_client = None
 try:
     if not GEMINI_DISABLED and GEMINI_API_KEY:
@@ -301,10 +323,13 @@ def _load_gemini():
 
 def ask_gemini(question: str):
     if GEMINI_DISABLED:
+        if not ask_offline_llm(question):
+            speak("Jarvis is unavailable.")
         return
     model = _load_gemini()
     if model is None:
-        speak("Jarvis is unavailable.")
+        if not ask_offline_llm(question):
+            speak("Jarvis is unavailable.")
         return
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z")
     context = f"""
@@ -332,7 +357,8 @@ Current datetime: {now}
         if resp and getattr(resp, "text", None):
             speak(resp.text.strip())
         else:
-            speak("I did not get a response.")
+            if not ask_offline_llm(question):
+                speak("I did not get a response.")
     except Exception as e:
         msg = str(e)
         print(f"Gemini error: {msg}")
@@ -340,9 +366,43 @@ Current datetime: {now}
         globals()["_gemini_model"] = None
         globals()["_gemini_tried"] = False
         if "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
-            speak("Jarvis hit a quota limit. Try again in a minute or switch models.")
+            if not ask_offline_llm(question):
+                speak("Jarvis hit a quota limit. Try again in a minute or switch models.")
         else:
-            speak("I am unable to answer that right now.")
+            if not ask_offline_llm(question):
+                speak("I am unable to answer that right now.")
+
+def ask_offline_llm(question: str):
+    """
+    Optional offline Jarvis using a local Ollama model. Set OLLAMA_MODEL env and install ollama.
+    """
+    if not OLLAMA_BIN or not OLLAMA_MODEL:
+        return False
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z")
+    prompt = f"""You are Jarvis, a concise surgical assistant.
+Current phase: {state.phase}
+Distance to tumor: {state.distance_mm}
+Centered: {state.centered}
+Confidence: {state.confidence}
+Recent events: {state.events[-5:]}
+Current datetime: {now}
+Answer briefly: {question}
+"""
+    try:
+        proc = subprocess.run(
+            [OLLAMA_BIN, "run", OLLAMA_MODEL],
+            input=prompt,
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            speak(proc.stdout.strip()[:400])
+            return True
+        print(f"Ollama returned {proc.returncode}: {proc.stderr}")
+    except Exception as e:
+        print(f"Ollama error: {e}")
+    return False
 
 # =========================
 # VOICE LISTENER
@@ -355,6 +415,8 @@ def voice_listener():
         if rec.AcceptWaveform(bytes(indata)):
             txt = js.loads(rec.Result()).get("text", "")
             if txt:
+                if VOICE_DEBUG:
+                    print(f"[voice] heard: {txt}")
                 voice_queue.put(txt.lower())
 
     with sd.RawInputStream(
@@ -405,6 +467,8 @@ while True:
         state.centered = abs(bx - cx) < CENTER_TOL_PX and abs(by - cy) < CENTER_TOL_PX
 
         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 165, 255), 2)
+        label = f"{p.get('class', TRACK_CLASS)} {state.confidence:.2f}"
+        cv2.putText(frame, label, (x, max(20, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
 
     # Phase
     if state.distance_mm is None:
@@ -417,13 +481,16 @@ while True:
         state.phase = "EXCISE"
 
     # AI auto-track
-    if ROBOT_ON and AI_MODE and not VOICE_MODE and not target_locked:
+    auto_allowed = ROBOT_ON and AI_MODE and not VOICE_MODE and not target_locked and time.time() >= ai_suspended_until
+    if auto_allowed:
         if preds and state.confidence > 0.6:
             dx = (bx - cx) / cx
             dy = (by - cy) / cy
             send_move(0, 0) if state.centered else send_move(dx, dy)
         else:
             robot_stop()
+    elif time.time() < ai_suspended_until:
+        robot_stop()
 
     # Voice handling
     while not voice_queue.empty():
@@ -437,6 +504,7 @@ while True:
                 speak("Voice control enabled")
             elif cmd == "disable voice":
                 VOICE_MODE = False
+                suspend_ai("voice disabled")
                 speak("Voice control disabled")
             elif not VOICE_MODE:
                 continue
@@ -454,7 +522,7 @@ while True:
                 send_move(VOICE_MOVE_STEP, 0)
             elif cmd == "stop":
                 speak("Stopping")
-                robot_stop()
+                suspend_ai("manual stop")
             elif cmd == "lock target" and state.centered:
                 target_locked = True
                 AI_MODE = False
@@ -494,7 +562,15 @@ while True:
         break
     if key == ord("v"):
         VOICE_MODE = not VOICE_MODE
+        if not VOICE_MODE:
+            suspend_ai("voice disabled (keyboard)")
         speak(f"Voice control {'enabled' if VOICE_MODE else 'disabled'} by keyboard")
+    if key == ord("a"):
+        AI_MODE = not AI_MODE
+        if not AI_MODE:
+            robot_stop()
+            suspend_ai("AI mode off (keyboard)")
+        speak(f"AI mode {'enabled' if AI_MODE else 'disabled'} by keyboard")
     if key == ord("g"):
         GEMINI_ARMED = True
         speak("Jarvis is listening for your next question")

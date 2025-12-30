@@ -1,122 +1,108 @@
-🦴 Vertebral Body Tumor Detection & AI-Assisted Robotic Control
+# Vertebral Body Tumor Detection & AI-Assisted Robotic Control
 
-AI-Assisted Surgical Robotics for Endoscopic Spine Surgery (Prototype)
+**AI-Assisted Surgical Robotics for Endoscopic Spine Surgery **
 
-A computer vision–driven system that detects vertebral body tumors in real time from an endoscopic camera feed and assists robotic navigation using voice commands, controller input, and an offline AI assistant.
+A computer vision–driven system that detects vertebral body tumors in real time from an endoscopic camera feed and assists robotic navigation using **voice commands, controller input, and an offline AI assistant**.
 
-⚠️ Research & educational prototype only. Not a medical device.
+---
 
-📌 Overview
+## 📌 Overview
 
 During endoscopic spine surgery, surgeons operate through extremely small incisions with limited visual feedback and almost no depth perception. Achieving sub-millimeter precision while removing vertebral body tumors is cognitively demanding and error-prone.
 
-This project explores how computer vision, voice interfaces, and local AI models can be combined to:
+This project explores how **computer vision, voice interfaces, and local AI models** can be combined to:
+- Detect spinal tumors in real time
+- Provide objective spatial guidance
+- Reduce manual intervention during robotic navigation
 
-Detect spinal tumors in real time
+The system integrates **tumor detection**, **voice-controlled movement**, and an **AI assistant** to augment surgical decision-making.
 
-Provide objective spatial guidance
+---
 
-Reduce manual intervention during robotic navigation
+## 🚀 Key Features
 
-The system integrates tumor detection, voice-controlled movement, and an AI assistant to augment surgical decision-making.
+- **Real-time tumor detection**
+  - Detects vertebral tumors as orange-marked regions
+  - Displays confidence score for each detection
+- **Distance estimation**
+  - Approximates distance to tumor (in millimeters)
+  - Helps guide centering and approach
+- **Voice-controlled robot navigation**
+  - Offline speech-to-text using Vosk
+- **AI-assisted guidance (Jarvis)**
+  - Offline AI assistant (via Ollama)
+  - Can answer queries such as tumor confidence, distance, centering, and movement guidance
+- **Fully offline operation**
+  - No internet required during runtime
+  - No token limits
 
-🚀 Key Features
+---
 
-Real-time tumor detection
+## 🧠 System Architecture
 
-Detects vertebral tumors as orange-marked regions
+1. **Camera feed** from robot-mounted endoscope  
+2. **Computer vision pipeline**  
+   - Frame capture → detection → confidence + distance estimation  
+3. **Control layer**  
+   - Voice commands (STT)  
+   - Controller input  
+4. **Robot communication**  
+   - UDP commands sent to robot brick  
+5. **AI assistant**  
+   - Local LLM for contextual surgical guidance  
 
-Displays confidence score for each detection
+---
 
-Distance estimation
+## 🛠️ Tech Stack
 
-Approximates distance to tumor (in millimeters)
+### Languages & Core Libraries
+- Python
+- OpenCV
+- NumPy
+- Matplotlib
 
-Helps guide centering and approach
+### AI & ML
+- Roboflow (dataset annotation & model training)
+- Ollama (offline local LLM)
+- Vosk (offline speech-to-text)
 
-Voice-controlled robot navigation
+### Systems & Infrastructure
+- Docker (local inference & reproducibility)
+- UDP sockets (robot communication)
+- Raspberry Pi (robot control brick; physical robot not yet built)
 
-Offline speech-to-text using Vosk
+---
 
-Commands: up, down, left, right, stop
+## 📂 Project Structure
 
-Controller-based control
+```text
+├── working.py                  # Main integrated pipeline
+├── working_robot_stable.py     # Stable robot control version
+├── enhanced.py                 # Experimental enhancements
+├── udp_test.py                 # UDP communication testing
+├── surgery_report.json         # Logged surgical metrics
+├── vosk_models/                # Offline speech-to-text models
+├── .matplotlib/                # Matplotlib cache
+├── __pycache__/                # Python cache
+└── README.md
+```
 
-PS4 controller support for manual override
+---
 
-AI-assisted guidance (Jarvis)
+## 🌱 Future Scope
 
-Offline AI assistant (via Ollama)
+- Accurate depth estimation using stereo or depth sensors  
+- Closed-loop robotic feedback  
+- Higher-precision tumor segmentation  
+- Surgeon-specific calibration  
+- Integration with real surgical robotic arms  
+- Research-grade clinical validation  
 
-Can answer queries such as:
+---
 
-Tumor confidence
+## 🎥 Demo
 
-Distance to tumor
+📹 **Demo video & screenshots:**  
+_Link to be added_
 
-Whether the tumor is centered
 
-How to move to align with the tumor
-
-Fully offline operation
-
-No internet required during runtime
-
-No token limits
-
-🧠 System Architecture
-
-Camera feed from robot-mounted endoscope
-
-Computer vision pipeline
-
-Frame capture → detection → confidence + distance estimation
-
-Control layer
-
-Voice commands (STT)
-
-PS4 controller input
-
-Robot communication
-
-UDP commands sent to robot brick
-
-AI assistant
-
-Local LLM for contextual surgical guidance
-
-🛠️ Tech Stack
-Languages & Core Libraries
-
-Python
-
-OpenCV – real-time image processing
-
-NumPy – numerical computations
-
-Matplotlib – visualizations & debugging
-
-AI & ML
-
-Roboflow
-
-Dataset annotation
-
-Model training for tumor detection
-
-Ollama
-
-Offline local LLM (Jarvis assistant)
-
-Vosk
-
-Offline speech-to-text (voice control)
-
-Systems & Infrastructure
-
-Docker – local inference & reproducibility
-
-UDP sockets – robot communication
-
-Raspberry Pi – robot control brick (hardware abstraction; physical robot not built yet)

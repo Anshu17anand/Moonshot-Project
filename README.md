@@ -1,5 +1,7 @@
 # Vertebral Body Tumor Detection & AI-Assisted Robotic Control
 
+Demo video link: https://drive.google.com/file/d/1-QBQygtlptnu4bQR8nQaM2cqHSKl4k4H/view?usp=sharing
+
 **AI-Assisted Surgical Robotics for Endoscopic Spine Surgery **
 
 A computer vision–driven system that detects vertebral body tumors in real time from an endoscopic camera feed and assists robotic navigation using **voice commands, controller input, and an offline AI assistant**.
